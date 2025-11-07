@@ -1,7 +1,9 @@
 import datetime
 import os
 
-LOG_DIR = "logs"
+# Ścieżka absolutna do folderu logs w katalogu projektu
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 def log_info(message):
     # Upewnij się, że folder logs istnieje
@@ -10,7 +12,7 @@ def log_info(message):
     # Pobierz aktualną datę i godzinę
     now = datetime.datetime.now()
 
-    # Plik logu będzie nazwany wg daty i godziny, np. logs/2025-11-06_14.log
+    # Plik logu nazwany wg daty i godziny, np. logs/2025-11-06_14.log
     log_filename = now.strftime("%Y-%m-%d_%H.log")
     log_path = os.path.join(LOG_DIR, log_filename)
 
