@@ -49,20 +49,26 @@ def initialize_database():
         )
     """)
 
+  # --- EXTERNAL_PALETS ---
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS external_palets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            barcode TEXT UNIQUE NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            FOREIGN KEY(product_id) REFERENCES products(id)
+        )
+    """)
+
     # --- EVENTS ---
     c.execute("""
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_type TEXT NOT NULL,
-            box_barcode TEXT,
-            product_id INTEGER,
-            quantity INTEGER,
-            target_slot TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            payload TEXT, 
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             processed INTEGER DEFAULT 0,
-            FOREIGN KEY (box_barcode) REFERENCES boxes (barcode),
-            FOREIGN KEY (product_id) REFERENCES products (id),
-            FOREIGN KEY (target_slot) REFERENCES slots (id)
+            processed_at DATETIME
         )
     """)
 

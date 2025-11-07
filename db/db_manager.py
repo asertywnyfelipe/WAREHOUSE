@@ -1,32 +1,69 @@
 import sqlite3
 import os
+import json
 from utils.logger import log_info as log
 from db.db_init import get_connection, DB_PATH
 
-
 # --- EVENTS ---
-def get_new_events():
-    """Pobiera eventy nieprzetworzone."""
+
+def add_event(event_type, payload=None):
+    """
+    Dodaje nowy event do kolejki.
+    payload: słownik z dodatkowymi danymi eventu.
+    """
+    payload_json = json.dumps(payload) if payload else None
     conn = get_connection()
     c = conn.cursor()
     c.execute("""
-        SELECT id, event_type, box_barcode, product_id, quantity, target_slot
-        FROM events WHERE processed = 0
-    """)
-    events = c.fetchall()
+        INSERT INTO events (event_type, payload)
+        VALUES (?, ?)
+    """, (event_type, payload_json))
+    conn.commit()
     conn.close()
+    log(f"🆕 Event added: {event_type}")
+
+
+def get_new_events():
+    """Pobiera nieprzetworzone eventy jako listę słowników."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, event_type, payload, created_at
+        FROM events 
+        WHERE processed = 0
+        ORDER BY created_at ASC
+    """)
+    rows = c.fetchall()
+    conn.close()
+
+    events = []
+    for row in rows:
+        payload = json.loads(row[2]) if row[2] else {}
+        events.append({
+            "id": row[0],
+            "event_type": row[1],
+            "payload": payload,
+            "created_at": row[3]
+        })
     return events
 
 
 def mark_event_processed(event_id):
+    """Oznacza event jako przetworzony z timestampem."""
     conn = get_connection()
     c = conn.cursor()
-    c.execute("UPDATE events SET processed = 1 WHERE id = ?", (event_id,))
+    c.execute("""
+        UPDATE events 
+        SET processed = 1, processed_at = CURRENT_TIMESTAMP 
+        WHERE id = ?
+    """, (event_id,))
     conn.commit()
     conn.close()
+    log(f"✅ Event {event_id} marked as processed")
 
 
 # --- BOXES ---
+
 def get_box_by_product(product_id):
     """Znajdź istniejący box z miejscem dla danego produktu."""
     conn = get_connection()
@@ -43,7 +80,7 @@ def get_box_by_product(product_id):
     return result
 
 
-def create_box(product_id, quantity):
+def create_box(product_id, quantity=0):
     """Utwórz nowy box z produktem."""
     conn = get_connection()
     c = conn.cursor()
@@ -84,6 +121,7 @@ def assign_box_to_slot(box_barcode, slot_id):
     conn.close()
     log(f"📦 Box {box_barcode} assigned to slot {slot_id}")
 
+
 def get_max_per_box_for_product(product_id):
     """Returns how many units fit in one box for given product."""
     conn = get_connection()
@@ -103,17 +141,25 @@ def get_free_slot():
     conn.close()
     return result[0] if result else None
 
-def add_product_type(name, weight=0, max_per_box=1):
-    """Dodaje produkt do tabeli products."""
+
+# --- PRODUCTS ---
+
+def add_product_type(name: str, weight: float, max_per_box: int):
+    """Dodaje nowy typ produktu do tabeli products."""
     conn = get_connection()
     c = conn.cursor()
-    c.execute("""
-        INSERT OR IGNORE INTO products (name, weight, max_per_box)
-        VALUES (?, ?, ?)
-    """, (name, weight, max_per_box))
-    conn.commit()
-    conn.close()
-    log(f"🆕 Added product {name}")
+    try:
+        c.execute("""
+            INSERT INTO products (name, weight, max_per_box)
+            VALUES (?, ?, ?)
+        """, (name, weight, max_per_box))
+        conn.commit()
+        log(f"🆕 Added product: {name}, weight: {weight}, max_per_box: {max_per_box}")
+    except sqlite3.IntegrityError:
+        log(f"⚠️ Product {name} already exists.")
+    finally:
+        conn.close()
+
 
 def get_product_info(product_id):
     """Zwraca informacje o produkcie po jego ID."""
@@ -124,13 +170,13 @@ def get_product_info(product_id):
     conn.close()
     if not product:
         return None
-    # Zwracamy jako słownik dla wygody
     return {
         "id": product[0],
         "name": product[1],
         "weight": product[2],
         "max_per_box": product[3]
     }
+
 
 def get_stock_status():
     """Zwraca aktualny stan magazynu dla wszystkich produktów."""
@@ -146,3 +192,40 @@ def get_stock_status():
     conn.close()
     return result
 
+
+# --- EXTERNAL PALETS ---
+
+def add_external_palet(name: str, quantity: int):
+    """
+    Dodaje nową paletę do tabeli external_palets i generuje event ADD_PALET.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO external_palets (name, quantity)
+        VALUES (?, ?)
+    """, (name, quantity))
+    conn.commit()
+    palet_id = c.lastrowid
+    conn.close()
+    
+    log(f"📦 Dodano nową paletę {name} ({quantity} szt.)")
+    
+    # Dodanie eventu ADD_PALET do kolejki
+    add_event("ADD_PALET", payload={"palet_id": palet_id, "name": name, "quantity": quantity})
+    return palet_id
+
+
+def get_external_palets():
+    """
+    Zwraca listę wszystkich dostępnych palet.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, name, quantity FROM external_palets
+    """)
+    palets = c.fetchall()
+    conn.close()
+    
+    return [{"id": p[0], "name": p[1], "quantity": p[2]} for p in palets]
