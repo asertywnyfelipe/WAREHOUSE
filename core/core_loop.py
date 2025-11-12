@@ -1,69 +1,27 @@
-import sqlite3
-from utils.error_handler import handle_exception
-from db.db_init import initialize_database as init_db
-from db.db_manager import (
-    add_product_type,
-    get_product_info,
-    create_box as create_new_box,
-    get_stock_status,
-    add_event,
-    get_new_events,
-    mark_event_processed,
-    get_external_palets,
-)
-from utils.logger import log_info as log
+from db.db_manager import *
 
-# --- Funkcja obsługi pojedynczego eventu ---
-def process_event(event):
-    event_type = event["event_type"]
-    payload = event.get("payload", {})
-    try:
-        if event_type == "ADD_PRODUCT_TYPE":
-            add_product_type(payload["name"], payload["weight"], payload["max_per_box"])
-            log(f"✅ Event executed: Added product {payload['name']}")
-        elif event_type == "ADD_PRODUCTS_TO_STOCK":
-            from core.stock import add_products_to_stock  # import dynamiczny
-            add_products_to_stock(payload["product_name"], payload["quantity"])
-            log(f"✅ Event executed: Added {payload['quantity']} {payload['product_name']} to stock")
-        elif event_type == "ADD_PALETTE":
-            from core.manage_palets import create_external_palet
-            create_external_palet(payload["palet_name"])
-            log(f"✅ Event executed: Added external palet {payload['palet_name']}")
-        else:
-            log(f"⚠️ Unknown event type: {event_type}")
-    except Exception as e:
-        handle_exception(e)
-    finally:
-        mark_event_processed(event["id"])
+def handle_exception(e):
+    print(f"❌ Wystąpił błąd: {e}")
 
-
-# --- Core loop z eventami ---
 def core_loop():
-    print("=== SYSTEM MAGAZYNOWY ===")
-
-    choice = input("Czy chcesz zainicjalizować bazę danych? (t/n): ").lower()
-    if choice == "t":
-        init_db()
-        print("✅ Baza danych gotowa.\n")
-
     while True:
-        # przetwarzamy wszystkie nieprzetworzone eventy
         events = get_new_events()
         for e in events:
             process_event(e)
 
-        # menu główne
-        print("\n1️⃣ Dodaj typ produktu")
+        print("\n--- MENU GŁÓWNE ---")
+        print("1️⃣ Dodaj typ produktu")
         print("2️⃣ Dodaj produkty do magazynu")
         print("3️⃣ Pokaż stan magazynu")
         print("4️⃣ Zarządzanie paletami")
         print("5️⃣ Wyjście")
+        print("q️⃣ Pokaż kolejkę eventów")
 
-        choice = input("Wybierz opcję: ")
+        choice = input("Wybierz opcję: ").strip()
 
         try:
             if choice == "1":
-                name = input("Nazwa produktu: ")
+                name = input("Nazwa produktu: ").strip()
                 weight = float(input("Waga produktu (kg): "))
                 max_per_box = int(input("Max produktów w boxie: "))
                 add_event("ADD_PRODUCT_TYPE", payload={
@@ -73,17 +31,46 @@ def core_loop():
                 })
 
             elif choice == "2":
-                product = input("Nazwa produktu: ")
-                qty = int(input("Ilość do dodania: "))
-                add_event("ADD_PRODUCTS_TO_STOCK", payload={
-                    "product_name": product,
-                    "quantity": qty
-                })
+                print("\n--- 🔍 Wyszukaj produkt ---")
+                query = input("Wpisz fragment nazwy produktu: ").strip().lower()
+                if not query:
+                    print("❌ Nie podano nazwy, wracam do menu.")
+                    continue
+
+                matches = search_products(query)
+                if not matches:
+                    print("⚠️ Nie znaleziono żadnych produktów.")
+                    continue
+
+                print("\n📦 Wyniki wyszukiwania:")
+                for i, p in enumerate(matches, start=1):
+                    print(f"{i}. {p['name']} (waga: {p['weight']} kg, max w boxie: {p['max_per_box']})")
+
+                try:
+                    selection = int(input("\nWybierz numer produktu: "))
+                    if selection < 1 or selection > len(matches):
+                        print("❌ Niepoprawny wybór.")
+                        continue
+
+                    chosen = matches[selection - 1]
+                    qty = int(input(f"Ile sztuk produktu '{chosen['name']}' dodać do magazynu: "))
+
+                    add_event("ADD_PRODUCTS_TO_STOCK", payload={
+                        "product_id": chosen["id"],
+                        "product_name": chosen["name"],
+                        "quantity": qty
+                    })
+                    print(f"✅ Dodano event dodania {qty} szt. produktu '{chosen['name']}'")
+
+                except ValueError:
+                    print("⚠️ Niepoprawny wybór — wprowadź numer.")
+                    continue
 
             elif choice == "3":
                 stock = get_stock_status()
-                for p_id, name, total in stock:
-                    print(f"{name}: {total} szt.")
+                print("\n--- STAN MAGAZYNU ---")
+                for item in stock:
+                    print(f"{item['name']}: {item['quantity']} szt.")
 
             elif choice == "4":
                 manage_palets_menu()
@@ -92,13 +79,15 @@ def core_loop():
                 print("👋 Koniec programu.")
                 break
 
+            elif choice.lower() == "q":
+                show_event_queue()
+
             else:
                 print("❌ Niepoprawna opcja, spróbuj ponownie.")
+
         except Exception as e:
             handle_exception(e)
 
-
-# --- Podmenu do zarządzania paletami ---
 def manage_palets_menu():
     while True:
         print("\n--- ZARZĄDZANIE PALETAMI ---")
@@ -106,18 +95,30 @@ def manage_palets_menu():
         print("2️⃣ Wyświetl dostępne palety")
         print("3️⃣ Powrót do głównego menu")
 
-        choice = input("Wybierz opcję: ")
+        choice = input("Wybierz opcję: ").strip()
 
         try:
             if choice == "1":
-                palet_name = input("Nazwa palety: ")
-                add_event("ADD_PALETTE", payload={"palet_name": palet_name})
+                palet_name = input("Nazwa palety: ").strip()
+                product_name = input("Nazwa produktu: ").strip()
+                quantity = int(input("Ilość produktu na palecie: "))
+
+                if not check_product_exists(product_name):
+                    print(f"❌ Produkt '{product_name}' nie istnieje w bazie. Paleta nie została dodana.")
+                    continue
+
+                add_event("ADD_PALETTE", payload={
+                    "palet_name": palet_name,
+                    "product_name": product_name,
+                    "quantity": quantity
+                })
 
             elif choice == "2":
                 palets = get_external_palets()
                 if not palets:
                     print("Brak dostępnych palet.")
                 else:
+                    print("\n--- DOSTĘPNE PALETY ---")
                     for p in palets:
                         print(f"- {p['name']} ({p['quantity']} produktów)")
 
@@ -126,9 +127,39 @@ def manage_palets_menu():
 
             else:
                 print("❌ Niepoprawna opcja, spróbuj ponownie.")
+
         except Exception as e:
             handle_exception(e)
 
+def process_event(event):
+    try:
+        payload = event.get("payload", {})
 
-if __name__ == "__main__":
-    core_loop()
+        if event["event_type"] == "ADD_PRODUCT_TYPE":
+            add_product_type(
+                payload["name"],
+                payload["weight"],
+                payload["max_per_box"]
+            )
+
+        elif event["event_type"] == "ADD_PRODUCTS_TO_STOCK":
+            add_products_to_stock(payload["product_name"], payload["quantity"])
+
+        elif event["event_type"] == "ADD_PALETTE":
+            add_external_palet(payload["palet_name"], payload["product_name"], payload["quantity"])
+
+        mark_event_processed(event["id"])
+
+    except Exception as e:
+        mark_event_as_failed(event["id"], str(e))
+        print(f"❌ Błąd podczas przetwarzania eventu {event['event_type']}: {e}")
+
+def show_event_queue():
+    all_events = get_new_events()  # teraz get_new_events zwraca też przetworzone i nieprzetworzone
+    if not all_events:
+        print("📭 Kolejka jest pusta.")
+    else:
+        print("\n--- KOLEJKA ZDARZEŃ ---")
+        for e in all_events:
+            status = e.get("status", "NEW")
+            print(f"• [{status}] {e['type']} | payload={e.get('payload', {})}")
