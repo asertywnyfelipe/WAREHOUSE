@@ -21,7 +21,15 @@ def init_db():
         processed INTEGER DEFAULT 0
     )
     """)
-
+    cur.execute("""
+    CREATE TABLE external_palets (
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    product_id INTEGER,
+    quantity INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
     conn.commit()
     conn.close()
 
